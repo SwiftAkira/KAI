@@ -10,10 +10,11 @@ import torch
 from pressure_agi.engine.field import Field
 from pressure_agi.engine.injector import inject
 from pressure_agi.engine.decide import decide
-from pressure_agi.io.codec_text import decode, encode
+from pressure_agi.io.codec_text import decode
 from pressure_agi.engine.memory import EpisodicMemory
 from pressure_agi.engine.critic import Critic
 from pressure_agi.engine.planner import Planner
+from pressure_agi.io.adapter import TextAdapter
 
 app = typer.Typer()
 
@@ -91,8 +92,9 @@ async def step_once(
     if memory:
         snapshot = {
             "t": loop_count,
-            "vector": field.cpu_states,
-            "decision": action
+            "text": text,
+            "vector": torch.tensor(action.vector, device=field.device, dtype=field.dtype) if action.vector is not None else torch.empty(0, device=field.device, dtype=field.dtype),
+            "decision": action.type
         }
         memory.store(snapshot)
         if verbose: print(f"[blue]Stored snapshot {loop_count} in memory. Last decision was '{memory.retrieve_last()[0]['decision']}'.[/blue]")
@@ -134,6 +136,7 @@ def run(
     memory = EpisodicMemory(device=device)
     critic = Critic()
     planner = Planner(critic=critic)
+    adapter = TextAdapter()
     loop_count = 0
 
     while True:
@@ -150,8 +153,11 @@ def run(
             num_nodes = field.n if field.n > 0 else 1 # Avoid size 0
             candidate_goals = [torch.randn(num_nodes, device=device, dtype=torch.float64) for _ in range(5)]
             
-            # 2. Planner evaluates candidates
-            planner.evaluate_candidates(field, candidate_goals)
+            # The action is None because there's no external environment
+            candidate_tuples = [(vec, None) for vec in candidate_goals]
+
+            # 2. Planner evaluates candidates based on internal score
+            planner.evaluate_candidates(field, candidate_tuples, env=None)
 
             # 3. Select best action
             selected_goal_node = planner.select_action()
@@ -172,17 +178,17 @@ def run(
             table = generate_dashboard(loop_count, critic.last_entropy, "...")
             with Live(table, screen=True, redirect_stderr=False, vertical_overflow="visible") as live:
                 action = asyncio.run(step_once(
-                    text, field, critic, memory, loop_count,
-                    settle_steps, pos_threshold, neg_threshold,
-                    resonance_gain=resonance_gain,
+                    field, text, memory, critic,
+                    pos_threshold=pos_threshold,
+                    neg_threshold=neg_threshold,
                     k_resonance=k_resonance,
                     verbose=False # Suppress step_once prints for clean dashboard
                 ))
                 
-                output = encode(action)
+                output = adapter.adapt(action)
                 
                 # Update dashboard with final values
-                table = generate_dashboard(loop_count, critic.last_entropy, action)
+                table = generate_dashboard(loop_count, critic.last_entropy, output)
                 live.update(table)
 
         except KeyboardInterrupt:

@@ -1,14 +1,27 @@
+from dataclasses import dataclass
+from typing import Optional
 import torch
-from pressure_agi.engine.field import Field
 
-def decide(field: Field, theta_pos: float, theta_neg: float):
+from .field import Field
+
+@dataclass
+class Action:
+    """Represents a simple, decided action."""
+    type: str  # "positive", "negative", "neutral"
+    vector: Optional[torch.Tensor] = None
+
+def decide(field: Field, pos_threshold: float, neg_threshold: float) -> Optional[Action]:
     """
-    Decides on an action based on the mean state of the field and configured thresholds.
+    Analyzes the field's coherence and decides on a simple action.
     """
-    mean_state = torch.mean(field.states).item()
-    if mean_state > theta_pos:
-        return "say_positive"
-    elif mean_state < theta_neg:
-        return "say_negative"
+    if field.n == 0:
+        return None
+
+    coherence = torch.mean(field.states).item()
+
+    if coherence > pos_threshold:
+        return Action(type="positive")
+    elif coherence < neg_threshold:
+        return Action(type="negative")
     else:
-        return "say_neutral" 
+        return None 

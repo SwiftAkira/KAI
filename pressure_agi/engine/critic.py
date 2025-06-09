@@ -3,10 +3,9 @@ from .field import Field
 
 class Critic:
     """
-    The Critic evaluates the state of the field and applies a penalty
-    to prevent runaway energy (high entropy).
+    Evaluates the state of the Field, providing metrics for stability and performance.
     """
-    def __init__(self, entropy_threshold=0.5, penalty_factor=0.1):
+    def __init__(self, entropy_threshold=0.9, penalty_factor=0.1):
         self.entropy_threshold = entropy_threshold
         self.penalty_factor = penalty_factor
         self.last_entropy = 0.0
@@ -18,6 +17,42 @@ class Critic:
         entropy = torch.std(field.states).item()
         self.last_entropy = entropy
         return entropy
+
+    def calculate_energy(self, field: Field) -> float:
+        """Calculates the total kinetic energy of the field's pressures."""
+        if field.n == 0:
+            return 0.0
+        # Energy = Σ ½·pressure²
+        return torch.sum(0.5 * field.pressures.pow(2)).item()
+
+    def get_composite_score(self, field: Field, with_grad: bool = False) -> tuple[float, torch.Tensor | None]:
+        """
+        Calculates a composite score based on negative entropy and energy.
+        Lower is better. The planner will try to maximize this value.
+        Optionally returns gradients for logging.
+        """
+        if field.n == 0:
+            return 0.0, None
+
+        states = field.states.clone()
+        pressures = field.pressures.clone()
+
+        if with_grad:
+            states.requires_grad_(True)
+            pressures.requires_grad_(True)
+
+        entropy = torch.std(states)
+        energy = torch.sum(0.5 * pressures.pow(2))
+        
+        # Composite score = -entropy - 0.1 * energy
+        score = -entropy - (0.1 * energy)
+
+        grad = None
+        if with_grad:
+            score.backward()
+            grad = states.grad.clone()
+
+        return score.item(), grad
 
     def apply_penalty(self, field: Field):
         """Applies a pressure penalty if entropy is above the threshold."""

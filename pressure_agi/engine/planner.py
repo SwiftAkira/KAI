@@ -23,37 +23,35 @@ def monte_pressure_rollout(
     field_state: Field,
     goal_vector: torch.Tensor,
     critic: Critic,
-    env_clone: object, # Changed from gym.Env to object for more flexibility
-    action_to_take: int,
-    settle_steps: int = 80
+    settle_steps: int = 80,
+    env_clone: Optional[object] = None,
+    action_to_take: Optional[object] = None,
 ) -> float:
     """
-    Simulates injecting a goal into a clone of the field AND taking an action
-    in a clone of the environment to estimate the reward.
-    The reward is the external reward penalized by internal instability.
+    Simulates injecting a goal and settling the field to evaluate the outcome.
+    The reward can be a combination of internal score and external environment reward.
     """
-    # --- Internal Simulation: Calculate instability penalty ---
+    # --- Internal Simulation ---
     sim_field = copy.deepcopy(field_state)
 
-    # Inject the candidate goal's vector as a pressure impulse
     min_dim = min(sim_field.n, len(goal_vector))
     if min_dim > 0:
         sim_field.pressures[:min_dim] += goal_vector[:min_dim]
 
-    # Settle the simulated field
     for _ in range(settle_steps):
         sim_field.step()
-    entropy_penalty = critic.calculate_entropy(sim_field)
+    
+    # The primary score comes from the critic's evaluation of the final state
+    internal_reward, _ = critic.get_composite_score(sim_field)
+    total_reward = internal_reward
+    
+    # --- Optional: External Simulation ---
+    if env_clone is not None and action_to_take is not None:
+        _obs, external_reward, _done = env_clone.step(action_to_take)
+        # The external reward is added to the internal score
+        total_reward += external_reward
 
-    # --- External Simulation: Get reward from the environment ---
-    # The environment clone is already at the correct state.
-    # We don't need the observation, just the reward from the step.
-    # The action is now the name of the action, not an index.
-    _obs, reward, done = env_clone.step(action_to_take)
-
-    # The final estimated reward is the external reward minus the internal penalty.
-    final_reward = reward - (entropy_penalty * 0.1) # Scale penalty to be competitive with reward
-    return final_reward
+    return total_reward
 
 class Planner:
     """A simple Monte Carlo Tree Search-style planner."""
@@ -63,20 +61,30 @@ class Planner:
         self.epsilon = epsilon # Chance to explore a random goal
         self.expansion_threshold = expansion_threshold
 
-    def evaluate_candidates(self, field: Field, candidates: List[Tuple[torch.Tensor, object]], env: object, max_candidates: int = 5):
+    def evaluate_candidates(
+        self,
+        field: Field,
+        candidates: List[Tuple[torch.Tensor, Optional[object]]],
+        env: Optional[object] = None,
+        max_candidates: int = 5
+    ):
         """
-        Evaluates a list of candidate goals (vector, action_name) using rollouts.
+        Evaluates a list of candidate goals using rollouts.
+        Each candidate is a tuple of (goal_vector, action_for_env).
+        The 'action_for_env' can be None if there is no environment.
         """
         for goal_vector, action_name in candidates[:max_candidates]:
-            # Each rollout needs a fresh clone of the environment at the current state.
-            env_clone = copy.deepcopy(env)
+            env_clone = copy.deepcopy(env) if env else None
             
             delta_reward = monte_pressure_rollout(
-                field, goal_vector, self.critic, env_clone, action_name, settle_steps=20 # Less steps for speed
+                field_state=field,
+                goal_vector=goal_vector,
+                critic=self.critic,
+                env_clone=env_clone,
+                action_to_take=action_name,
+                settle_steps=20
             )
             
-            # Note: The original expansion threshold was designed for coherence,
-            # it might be too high for env rewards. We'll keep it for now.
             if delta_reward > self.expansion_threshold:
                 new_node = GoalNode(vector=goal_vector, reward_est=delta_reward, parent=self.root)
                 self.root.children.append(new_node)
