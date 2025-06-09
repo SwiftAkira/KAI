@@ -3,29 +3,42 @@ import torch
 from .node import Node
 
 class Field:
-    def __init__(self, n=100, k=0.05, damp=0.02, device='cpu'):
-        self.nodes = [Node() for _ in range(n)]
-        self.K = k
-        self.damp = damp
+    def __init__(self, n=10, device='cpu', dtype=torch.float32, global_gain=0.01, impulse_gain=0.1):
         self.n = n
-        self.dtype = torch.float32
+        self.device = device
+        self.dtype = dtype
+        self.global_gain = global_gain
+        self.impulse_gain = impulse_gain
 
-        if device == 'gpu' and torch.backends.mps.is_available():
-            self.device = torch.device('mps')
-        else:
-            self.device = torch.device('cpu')
-            self.dtype = torch.float64
+        self.states = torch.rand(n, device=device, dtype=dtype)
+        self.pressures = torch.zeros(n, device=device, dtype=dtype)
 
-        self.states = torch.zeros(n, dtype=self.dtype, device=self.device)
-        self.pressures = torch.zeros(n, dtype=self.dtype, device=self.device)
+    def step(self, dt=0.01, friction=0.05):
+        if self.n == 0:
+            return
 
-    def step(self, dt=0.01):
-        total_state = torch.sum(self.states)
-        forces = self.K * (total_state - self.n * self.states)
+        # Vectorized state differences
+        state_diffs = self.states.unsqueeze(1) - self.states.unsqueeze(0)
 
-        self.pressures = forces - self.damp * self.pressures
+        # Calculate pairwise forces
+        pairwise_forces = torch.sum(state_diffs, dim=1)
+
+        # Apply global broadcast term (attraction to herd)
+        global_mean = pairwise_forces.mean()
+        broadcast_forces = self.global_gain * (global_mean - pairwise_forces)
+        total_forces = pairwise_forces + broadcast_forces
+
+        # Update pressures based on total forces
+        self.pressures += total_forces * dt
+
+        # Apply friction to pressure
+        self.pressures -= friction * self.pressures
+
+        # Update states based on pressure
         self.states += self.pressures * dt
-        self.pressures *= 0.8  # Decay from original propagate
+
+        # Clip only pressures to prevent explosion, let states rise
+        self.pressures.clamp_(-1, 1)
 
     @property
     def cpu_states(self):

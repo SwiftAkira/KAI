@@ -1,6 +1,8 @@
 import typer
 import yaml
 from rich import print
+from rich.live import Live
+from rich.table import Table
 import asyncio
 
 from pressure_agi.engine.field import Field
@@ -44,6 +46,10 @@ async def step_once(
     critic.evaluate(field)
 
     # 4. Settle the field by stepping the simulation
+    # A short settle after injection is critical for stability
+    for _ in range(10):
+        field.step()
+
     if verbose: print(f"[yellow]Settling field for {settle_steps} steps...[/yellow]")
     for _ in range(settle_steps):
         field.step()
@@ -61,6 +67,16 @@ async def step_once(
     if verbose: print(f"[blue]Stored snapshot {loop_count} in memory. Last decision was '{memory.retrieve_last()[0]['decision']}'.[/blue]")
     
     return action
+
+def generate_dashboard(loop_count, entropy, decision) -> Table:
+    """Creates a Rich table for the dashboard."""
+    table = Table(title="Pressure-AGI State")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="magenta")
+    table.add_row("Turn", str(loop_count))
+    table.add_row("Field Entropy", f"{entropy:.4f}")
+    table.add_row("Decision", decision)
+    return table
 
 @app.command()
 def run(
@@ -95,13 +111,19 @@ def run(
             
             loop_count += 1
 
-            action = asyncio.run(step_once(
-                text, field, critic, memory, loop_count,
-                settle_steps, pos_threshold, neg_threshold
-            ))
-            
-            output = encode(action)
-            print(f"[bold magenta]{output}[/bold magenta]\n")
+            table = generate_dashboard(loop_count, critic.last_entropy, "...")
+            with Live(table, screen=True, redirect_stderr=False, vertical_overflow="visible") as live:
+                action = asyncio.run(step_once(
+                    text, field, critic, memory, loop_count,
+                    settle_steps, pos_threshold, neg_threshold,
+                    verbose=False # Suppress step_once prints for clean dashboard
+                ))
+                
+                output = encode(action)
+                
+                # Update dashboard with final values
+                table = generate_dashboard(loop_count, critic.last_entropy, action)
+                live.update(table)
 
         except KeyboardInterrupt:
             break
