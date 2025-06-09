@@ -11,11 +11,8 @@ def inject(field: Field, percepts: list[dict]):
         
     num_new_nodes = len(percepts)
     
-    # The initial state of the new nodes is their valence
     new_states = torch.tensor([p['valence'] for p in percepts], dtype=field.dtype, device=field.device)
-    
-    # Give new nodes an initial pressure "kick" based on their valence
-    new_pressures = new_states * field.impulse_gain
+    new_pressures = torch.zeros(num_new_nodes, dtype=field.dtype, device=field.device)
 
     field.states = torch.cat((field.states, new_states))
     field.pressures = torch.cat((field.pressures, new_pressures))

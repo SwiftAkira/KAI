@@ -26,43 +26,43 @@ def nan_trap(field, tag: str = "", **kwargs):
                     raise RuntimeError(f"NaN detected in '{name}' — aborting step.")
 
 class Field:
-    def __init__(self, n=10, device='cpu', dtype=torch.float64, global_gain=0.15, impulse_gain=0.4):
+    def __init__(self, n=10, device='cpu', dtype=torch.float64, K=1.0, f_max=8.0, g_mean=0.01):
         self.n = n
         self.device = device
         self.dtype = dtype
-        self.global_gain = global_gain
-        self.impulse_gain = impulse_gain
+        
+        # Physics parameters
+        self.K = K              # Spring constant for pairwise forces
+        self.f_max = f_max      # Absolute force cap per edge
+        self.g_mean = g_mean    # Mean-field damping gain
+
+        assert self.dtype == torch.float64, "Field must use float64 for stability."
 
         self.states = torch.rand(n, device=device, dtype=dtype)
         self.pressures = torch.zeros(n, device=device, dtype=dtype)
 
-    def step(self, dt=0.01, friction=0.025):
+    def step(self, dt=0.01, friction=0.02):
         if self.n == 0:
             return
 
-        # Vectorized state differences
+        # 1. Pairwise spring forces, clipped to prevent explosion
         state_diffs = self.states.unsqueeze(1) - self.states.unsqueeze(0)
+        pairwise_forces = torch.clamp(self.K * state_diffs, -self.f_max, self.f_max)
+        total_pairwise_forces = torch.sum(pairwise_forces, dim=1)
 
-        # Calculate pairwise forces
-        pairwise_forces = torch.sum(state_diffs, dim=1)
-        
-        if pairwise_forces.numel() == 0:
-            return
+        # 2. Mean-field damping (pulls nodes toward the mean state)
+        mean_state = torch.mean(self.states)
+        mean_field_damping_forces = self.g_mean * (self.states - mean_state)
 
-        global_mean = pairwise_forces.mean()
-        broadcast_forces = self.global_gain * (global_mean - pairwise_forces)
-        total_forces = pairwise_forces + broadcast_forces
+        # 3. Total force on each node
+        total_forces = total_pairwise_forces - mean_field_damping_forces
 
-        # Update pressures based on total forces
+        # 4. Semi-implicit Euler integration
+        # Update pressure (velocity) first...
         self.pressures += total_forces * dt
+        self.pressures *= (1.0 - friction)
 
-        # Apply friction to pressure
-        self.pressures -= friction * self.pressures
-        
-        # CRITICAL: Clamp pressure *before* it updates state to prevent explosion
-        self.pressures.clamp_(-1, 1)
-
-        # Update states based on pressure
+        # ...then update state (position) using the *new* pressure.
         self.states += self.pressures * dt
 
     @property

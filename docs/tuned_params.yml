@@ -1,3 +1,4 @@
-global_gain: 0.01
-impulse_gain: 0.1
-friction: <_io.TextIOWrapper name='docs/tuned_params.yml' mode='w' encoding='UTF-8'>
+K: 1.0
+f_max: 8.0
+g_mean: 0.01
+friction: 0.02
