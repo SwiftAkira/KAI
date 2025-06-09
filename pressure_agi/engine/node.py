@@ -1,11 +1,9 @@
 import numpy as np
 
 class Node:
-    __slots__ = ("state", "valence", "pressure", "tags")
-    def __init__(self, state=0.0, valence=0.0, tags=None):
-        self.state    = float(state)
+    __slots__ = ("valence", "tags")
+    def __init__(self, valence=0.0, tags=None):
         self.valence  = float(valence)
-        self.pressure = 0.0
         self.tags     = set(tags or ())
 
     def propagate(self, dt: float):
