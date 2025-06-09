@@ -60,6 +60,7 @@ class Planner:
         self.critic = critic
         self.epsilon = epsilon # Chance to explore a random goal
         self.expansion_threshold = expansion_threshold
+        self.last_rollout_rewards: List[float] = []
 
     def evaluate_candidates(
         self,
@@ -73,6 +74,7 @@ class Planner:
         Each candidate is a tuple of (goal_vector, action_for_env).
         The 'action_for_env' can be None if there is no environment.
         """
+        self.last_rollout_rewards = [] # Clear previous rewards
         for goal_vector, action_name in candidates[:max_candidates]:
             env_clone = copy.deepcopy(env) if env else None
             
@@ -85,6 +87,8 @@ class Planner:
                 settle_steps=20
             )
             
+            self.last_rollout_rewards.append(delta_reward)
+
             if delta_reward > self.expansion_threshold:
                 new_node = GoalNode(vector=goal_vector, reward_est=delta_reward, parent=self.root)
                 self.root.children.append(new_node)

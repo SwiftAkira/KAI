@@ -4,8 +4,11 @@ from rich import print
 from rich.live import Live
 from rich.table import Table
 import asyncio
-from typing import Optional
+from typing import Optional, List
 import torch
+from rich.layout import Layout
+from rich.panel import Panel
+from rich.bar import Bar
 
 from pressure_agi.engine.field import Field
 from pressure_agi.engine.injector import inject
@@ -101,15 +104,68 @@ async def step_once(
     
     return action
 
-def generate_dashboard(loop_count, entropy, decision) -> Table:
-    """Creates a Rich table for the dashboard."""
-    table = Table(title="Pressure-AGI State")
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", style="magenta")
-    table.add_row("Turn", str(loop_count))
-    table.add_row("Field Entropy", f"{entropy:.4f}")
-    table.add_row("Decision", decision)
-    return table
+def generate_dashboard(
+    loop_count: int,
+    entropy: float,
+    action: str,
+    rollout_rewards: Optional[List[float]] = None
+) -> Panel:
+    """Generates the Rich layout for the dashboard."""
+    
+    layout = Layout()
+    layout.split_column(
+        Layout(name="header"),
+        Layout(name="main")
+    )
+
+    header_table = Table.grid(expand=True)
+    header_table.add_column(justify="left")
+    header_table.add_column(justify="right")
+    header_table.add_row(
+        f"[bold]Loop Step:[/bold] {loop_count}",
+        f"[bold]System Entropy:[/bold] {entropy:.4f}"
+    )
+
+    main_layout = Layout()
+    main_layout.split_row(
+        Layout(name="left"),
+        Layout(name="right")
+    )
+
+    action_panel = Panel(
+        f"[cyan]{action}[/cyan]",
+        title="[bold]Action Taken[/bold]",
+        border_style="green"
+    )
+
+    # --- Rollout Rewards Panel ---
+    if rollout_rewards:
+        reward_bars = ""
+        # Normalize rewards for display if they vary widely, but for now, just clip them
+        min_reward = min(rollout_rewards) if rollout_rewards else 0
+        max_reward = max(rollout_rewards) if rollout_rewards else 0
+        
+        for i, reward in enumerate(rollout_rewards):
+            # Simple scaling for the bar
+            bar_fraction = (reward - min_reward) / (max_reward - min_reward + 1e-6)
+            reward_bars += f"Candidate {i+1}: {reward:.3f}\n"
+            reward_bars += str(Bar(size=50, begin=0, end=1, fraction=bar_fraction)) + "\n"
+            
+        rewards_panel = Panel(
+            reward_bars,
+            title="[bold]Planner Rollout Rewards[/bold]",
+            border_style="magenta"
+        )
+    else:
+        rewards_panel = Panel("N/A", title="[bold]Planner Rollout Rewards[/bold]", border_style="magenta")
+
+    main_layout["left"].update(action_panel)
+    main_layout["right"].update(rewards_panel)
+
+    layout["header"].update(header_table)
+    layout["main"].update(main_layout)
+
+    return Panel(layout, title="[bold yellow]Pressure-AGI Dashboard[/bold yellow]")
 
 @app.command()
 def run(
@@ -179,6 +235,8 @@ def run(
             with Live(table, screen=True, redirect_stderr=False, vertical_overflow="visible") as live:
                 action = asyncio.run(step_once(
                     field, text, memory, critic,
+                    loop_count=loop_count,
+                    settle_steps=settle_steps,
                     pos_threshold=pos_threshold,
                     neg_threshold=neg_threshold,
                     k_resonance=k_resonance,
@@ -188,7 +246,7 @@ def run(
                 output = adapter.adapt(action)
                 
                 # Update dashboard with final values
-                table = generate_dashboard(loop_count, critic.last_entropy, output)
+                table = generate_dashboard(loop_count, critic.last_entropy, output, planner.last_rollout_rewards)
                 live.update(table)
 
         except KeyboardInterrupt:
