@@ -19,11 +19,13 @@ numpy==2.2.6
 packaging==25.0
 pillow==11.2.1
 pluggy==1.6.0
--e git+https://github.com/SwiftAkira/KAI.git@0c3ea9326ef9707b3ffa4a3472008e4048875344#egg=pressure_agi
+-e git+https://github.com/SwiftAkira/KAI.git@732a23e6981b5dc23f98326f104d384939f8fc82#egg=pressure_agi
 Pygments==2.19.1
 pyparsing==3.2.3
 pytest==8.4.0
+pytest-asyncio==1.0.0
 python-dateutil==2.9.0.post0
+PyYAML==6.0.2
 rich==14.0.0
 setuptools==80.9.0
 shellingham==1.5.4

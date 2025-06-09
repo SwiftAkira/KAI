@@ -1,0 +1,5 @@
+# Default configuration for the pressure-AGI agent
+
+decision_thresholds:
+  positive: 0.1
+  negative: -0.1 
