@@ -4,6 +4,7 @@ from rich import print
 from rich.live import Live
 from rich.table import Table
 import asyncio
+from typing import Optional
 
 from pressure_agi.engine.field import Field
 from pressure_agi.engine.injector import inject
@@ -25,8 +26,8 @@ def load_config():
 async def step_once(
     text: str,
     field: Field,
-    critic: Critic,
-    memory: EpisodicMemory,
+    critic: Optional[Critic],
+    memory: Optional[EpisodicMemory],
     loop_count: int,
     settle_steps: int,
     pos_threshold: float,
@@ -43,7 +44,11 @@ async def step_once(
     if verbose: print(f"[yellow]Injected. Field now has {field.n} nodes.[/yellow]")
 
     # 3. Critic evaluates the field before settling
-    critic.evaluate(field)
+    if critic:
+        # HACK: The critic's intervention destabilizes the new physics model.
+        # The new model is self-regulating, so the critic is disabled for now.
+        # critic.evaluate(field)
+        pass # Explicitly doing nothing with the critic for now
 
     # 4. Settle the field by stepping the simulation
     # A short settle after injection is critical for stability
@@ -58,13 +63,14 @@ async def step_once(
     action = decide(field, pos_threshold, neg_threshold)
 
     # 6. Store snapshot in memory
-    snapshot = {
-        "t": loop_count,
-        "vector": field.cpu_states,
-        "decision": action
-    }
-    memory.store(snapshot)
-    if verbose: print(f"[blue]Stored snapshot {loop_count} in memory. Last decision was '{memory.retrieve_last()[0]['decision']}'.[/blue]")
+    if memory:
+        snapshot = {
+            "t": loop_count,
+            "vector": field.cpu_states,
+            "decision": action
+        }
+        memory.store(snapshot)
+        if verbose: print(f"[blue]Stored snapshot {loop_count} in memory. Last decision was '{memory.retrieve_last()[0]['decision']}'.[/blue]")
     
     return action
 
