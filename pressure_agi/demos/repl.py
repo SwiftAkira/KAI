@@ -1,12 +1,14 @@
 import typer
 import yaml
 from rich import print
+import asyncio
 
 from pressure_agi.engine.field import Field
 from pressure_agi.engine.injector import inject
 from pressure_agi.engine.decide import decide
 from pressure_agi.io.codec_text import decode, encode
 from pressure_agi.engine.memory import EpisodicMemory
+from pressure_agi.engine.critic import Critic
 
 app = typer.Typer()
 
@@ -17,6 +19,48 @@ def load_config():
             return yaml.safe_load(f)
     except FileNotFoundError:
         return {}
+
+async def step_once(
+    text: str,
+    field: Field,
+    critic: Critic,
+    memory: EpisodicMemory,
+    loop_count: int,
+    settle_steps: int,
+    pos_threshold: float,
+    neg_threshold: float,
+    verbose: bool = True
+) -> str:
+    """Processes a single turn of the agent's loop."""
+    # 1. Decode input text into percepts
+    percepts = decode(text)
+    if verbose: print(f"[yellow]Decoded {len(percepts)} percepts...[/yellow]")
+
+    # 2. Inject percepts into the field
+    inject(field, percepts)
+    if verbose: print(f"[yellow]Injected. Field now has {field.n} nodes.[/yellow]")
+
+    # 3. Critic evaluates the field before settling
+    critic.evaluate(field)
+
+    # 4. Settle the field by stepping the simulation
+    if verbose: print(f"[yellow]Settling field for {settle_steps} steps...[/yellow]")
+    for _ in range(settle_steps):
+        field.step()
+
+    # 5. Decide on an action
+    action = decide(field, pos_threshold, neg_threshold)
+
+    # 6. Store snapshot in memory
+    snapshot = {
+        "t": loop_count,
+        "vector": field.cpu_states,
+        "decision": action
+    }
+    memory.store(snapshot)
+    if verbose: print(f"[blue]Stored snapshot {loop_count} in memory. Last decision was '{memory.retrieve_last()[0]['decision']}'.[/blue]")
+    
+    return action
 
 @app.command()
 def run(
@@ -32,7 +76,6 @@ def run(
     print("Enter text to be perceived by the agent. Type 'exit' to quit.")
 
     config = load_config()
-    # Prioritize CLI options, then config file, then defaults
     pos_threshold = theta_pos if theta_pos is not None else config.get('decision_thresholds', {}).get('positive', 0.1)
     neg_threshold = theta_neg if theta_neg is not None else config.get('decision_thresholds', {}).get('negative', -0.1)
 
@@ -40,11 +83,11 @@ def run(
 
     device = 'gpu' if gpu else 'cpu'
     memory = EpisodicMemory()
+    critic = Critic()
     loop_count = 0
 
     while True:
         try:
-            # Start with a fresh, empty field for each input
             field = Field(n=0, device=device)
             text = input("> ")
             if text.lower() == 'exit':
@@ -52,32 +95,11 @@ def run(
             
             loop_count += 1
 
-            # 1. Decode input text into percepts
-            percepts = decode(text)
-            print(f"[yellow]Decoded {len(percepts)} percepts...[/yellow]")
-
-            # 2. Inject percepts into the field
-            inject(field, percepts)
-            print(f"[yellow]Injected. Field now has {field.n} nodes.[/yellow]")
-
-            # 3. Settle the field by stepping the simulation
-            print(f"[yellow]Settling field for {settle_steps} steps...[/yellow]")
-            for _ in range(settle_steps):
-                field.step()
-
-            # 4. Decide on an action
-            action = decide(field, pos_threshold, neg_threshold)
-
-            # 5. Store snapshot in memory
-            snapshot = {
-                "t": loop_count,
-                "vector": field.cpu_states,
-                "decision": action
-            }
-            memory.store(snapshot)
-            print(f"[blue]Stored snapshot {loop_count} in memory. Last decision was '{memory.retrieve_last()[0]['decision']}'.[/blue]")
+            action = asyncio.run(step_once(
+                text, field, critic, memory, loop_count,
+                settle_steps, pos_threshold, neg_threshold
+            ))
             
-            # 6. Encode and print the action
             output = encode(action)
             print(f"[bold magenta]{output}[/bold magenta]\n")
 
