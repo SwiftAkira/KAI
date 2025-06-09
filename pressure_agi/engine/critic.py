@@ -11,21 +11,26 @@ class Critic:
         self.penalty_factor = penalty_factor
         self.last_entropy = 0.0
 
-    def evaluate(self, field: Field):
-        """
-        Calculates the entropy of the field and applies a pressure penalty
-        if it exceeds the threshold.
-        """
+    def calculate_entropy(self, field: Field) -> float:
+        """Calculates and returns the entropy of the field (std dev of states)."""
         if field.n == 0:
-            return
-
-        # Calculate entropy (standard deviation of states)
+            return 0.0
         entropy = torch.std(field.states).item()
         self.last_entropy = entropy
+        return entropy
 
-        # Calculate penalty only if entropy is above the threshold
+    def apply_penalty(self, field: Field):
+        """Applies a pressure penalty if entropy is above the threshold."""
+        entropy = self.last_entropy # Use the last calculated entropy
         if entropy > self.entropy_threshold:
+            # Apply a uniform negative pressure to cool the system down
             penalty = self.penalty_factor * (entropy - self.entropy_threshold)
-            
-            # Apply penalty to the pressure of all nodes
-            field.pressures -= penalty 
+            field.pressures -= penalty
+
+    def evaluate(self, field: Field):
+        """
+        Calculates the entropy of the field and applies a penalty if it's too high.
+        This is a convenience method that combines calculation and application.
+        """
+        self.calculate_entropy(field)
+        self.apply_penalty(field) 

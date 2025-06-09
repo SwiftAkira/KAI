@@ -5,6 +5,7 @@ from rich.live import Live
 from rich.table import Table
 import asyncio
 from typing import Optional
+import torch
 
 from pressure_agi.engine.field import Field
 from pressure_agi.engine.injector import inject
@@ -12,6 +13,7 @@ from pressure_agi.engine.decide import decide
 from pressure_agi.io.codec_text import decode, encode
 from pressure_agi.engine.memory import EpisodicMemory
 from pressure_agi.engine.critic import Critic
+from pressure_agi.engine.planner import Planner
 
 app = typer.Typer()
 
@@ -80,7 +82,9 @@ async def step_once(
         for _ in range(settle_steps // 2):
             field.step()
 
-    # 6. Decide on an action
+    # 6. Decide on an action (Planner replaces simple 'decide')
+    # The planner will be used here to select a high-level action/goal
+    # For now, we will keep the simple decide for the REPL loop
     action = decide(field, pos_threshold, neg_threshold)
 
     # 7. Store snapshot in memory
@@ -127,8 +131,9 @@ def run(
     print(f"Using thresholds: [cyan]positive > {pos_threshold}[/cyan], [cyan]negative < {neg_threshold}[/cyan]\n")
 
     device = 'gpu' if gpu else 'cpu'
-    memory = EpisodicMemory()
+    memory = EpisodicMemory(device=device)
     critic = Critic()
+    planner = Planner(critic=critic)
     loop_count = 0
 
     while True:
@@ -140,6 +145,30 @@ def run(
             
             loop_count += 1
 
+            # --- Planning Step ---
+            # 1. Generate candidate goals (for now, random vectors)
+            num_nodes = field.n if field.n > 0 else 1 # Avoid size 0
+            candidate_goals = [torch.randn(num_nodes, device=device, dtype=torch.float64) for _ in range(5)]
+            
+            # 2. Planner evaluates candidates
+            planner.evaluate_candidates(field, candidate_goals)
+
+            # 3. Select best action
+            selected_goal_node = planner.select_action()
+
+            # 4. Inject selected action into the live field
+            if selected_goal_node:
+                action_vector = selected_goal_node.vector
+                min_dim = min(field.n, len(action_vector))
+                if min_dim > 0:
+                    field.pressures[:min_dim] += action_vector[:min_dim]
+
+            # 5. Prune planner tree for next cycle
+            planner.prune_goals()
+            
+            # --- Main REPL Step ---
+            # We still run the original step_once to process the user input
+            # and get a low-level action for the dashboard. The planner runs in parallel.
             table = generate_dashboard(loop_count, critic.last_entropy, "...")
             with Live(table, screen=True, redirect_stderr=False, vertical_overflow="visible") as live:
                 action = asyncio.run(step_once(
