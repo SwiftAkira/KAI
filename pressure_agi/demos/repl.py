@@ -32,6 +32,8 @@ async def step_once(
     settle_steps: int,
     pos_threshold: float,
     neg_threshold: float,
+    resonance_gain: float = 0.0,
+    k_resonance: int = 0,
     verbose: bool = True
 ) -> str:
     """Processes a single turn of the agent's loop."""
@@ -59,10 +61,29 @@ async def step_once(
     for _ in range(settle_steps):
         field.step()
 
-    # 5. Decide on an action
+    # 5. Memory Resonance
+    if memory and k_resonance > 0 and resonance_gain > 0.0:
+        if verbose: print(f"[cyan]Retrieving {k_resonance} memories for resonance...[/cyan]")
+        retrieved_snapshots = memory.retrieve(field.states, k=k_resonance)
+        
+        for snapshot in retrieved_snapshots:
+            retrieved_state = snapshot['vector']
+            
+            # Calculate delta and apply resonance to pressure
+            min_dim = min(field.n, len(retrieved_state))
+            delta = retrieved_state[:min_dim] - field.states[:min_dim]
+            field.pressures[:min_dim] += resonance_gain * delta
+            if verbose: print(f"  [cyan]Applying resonance from snapshot t={snapshot['t']}...[/cyan]")
+        
+        # Settle the field again after applying resonance
+        if verbose and retrieved_snapshots: print(f"[yellow]Re-settling field after resonance...[/yellow]")
+        for _ in range(settle_steps // 2):
+            field.step()
+
+    # 6. Decide on an action
     action = decide(field, pos_threshold, neg_threshold)
 
-    # 6. Store snapshot in memory
+    # 7. Store snapshot in memory
     if memory:
         snapshot = {
             "t": loop_count,
@@ -89,7 +110,9 @@ def run(
     gpu: bool = typer.Option(False, "--gpu", help="Enable GPU acceleration."),
     settle_steps: int = typer.Option(100, help="Number of simulation steps to settle the field."),
     theta_pos: float = typer.Option(None, help="Positive decision threshold. Overrides config."),
-    theta_neg: float = typer.Option(None, help="Negative decision threshold. Overrides config.")
+    theta_neg: float = typer.Option(None, help="Negative decision threshold. Overrides config."),
+    resonance_gain: float = typer.Option(0.07, help="Gain for memory resonance pressure."),
+    k_resonance: int = typer.Option(3, help="Number of memories to use for resonance."),
 ):
     """
     A simple REPL to interact with the pressure-AGI agent.
@@ -122,6 +145,8 @@ def run(
                 action = asyncio.run(step_once(
                     text, field, critic, memory, loop_count,
                     settle_steps, pos_threshold, neg_threshold,
+                    resonance_gain=resonance_gain,
+                    k_resonance=k_resonance,
                     verbose=False # Suppress step_once prints for clean dashboard
                 ))
                 
