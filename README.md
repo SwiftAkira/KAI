@@ -1,6 +1,52 @@
-# KAI: A Pressure-Based AGI
+# Pressure-AGI
 
-This project is an experimental implementation of a novel artificial general intelligence architecture based on a concept of "pressure" propagating through a field of interconnected nodes. The simulation is built with performance in mind, leveraging vectorized computations and GPU acceleration via PyTorch and the Metal Performance Shaders (MPS) backend on Apple Silicon.
+This project is an experimental implementation of an Artificial General Intelligence architecture based on the concept of "mental pressure."
+
+## Core Concepts
+
+The agent's state is represented by a `Field` of `Nodes`, each with a `pressure` and `state`. 
+- **Pressure:** Represents the immediate "energy" or "urgency" of a node.
+- **State:** Represents the node's activation or information content.
+
+An `Agent` orchestrates the main components:
+- **`Field`**: The core data structure holding the agent's mental state.
+- **`Critic`**: Evaluates the `Field`'s state, calculating entropy and other metrics.
+- **`Planner`**: Simulates future actions to achieve goals (e.g., reduce entropy).
+- **`EpisodicMemory`**: Stores and retrieves past states, allowing the agent to learn from experience.
+- **`Adapter`**: Translates the agent's internal decisions into actions for a specific environment (e.g., text for a REPL, commands for a game).
+
+## Running the Agent
+
+This project uses `poetry` for dependency management.
+
+1.  **Install Dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+2.  **Run the REPL:**
+    The primary way to interact with the agent is through the command-line REPL.
+    ```bash
+    python -m pressure_agi.demos.repl
+    ```
+    You can now type sentences and see how the agent responds. The agent's memory (`memory_snapshot.pt`) will be saved in the root directory when you exit.
+
+3.  **Run with Dashboard:**
+    For a more detailed view of the agent's internal state, you can run the REPL with a dashboard:
+    ```bash
+    python -m pressure_agi.demos.repl --dashboard
+    ```
+
+## How it Works
+
+1.  User input is decoded into `Percepts` with sentiment values.
+2.  These `Percepts` are injected into the `Field`, changing node pressures.
+3.  The `Field` settles over several simulation steps.
+4.  The `EpisodicMemory` retrieves similar past experiences, applying "resonance" to the current field pressures.
+5.  The `Critic` evaluates the `Field`'s entropy.
+6.  The `decide` function makes a high-level decision (positive, negative, or neutral) based on the field's coherence.
+7.  The `TextAdapter` translates this decision into a conversational response.
+8.  The current state is saved as a snapshot in memory for future recall.
 
 ## Phase 0: Core Simulation & Stability
 

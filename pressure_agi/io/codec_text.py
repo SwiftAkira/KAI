@@ -1,4 +1,5 @@
 from typing import List, Dict
+import re
 
 # Simple sentiment lexicon
 LEXICON = {
@@ -26,7 +27,9 @@ def decode(text: str) -> List[Dict]:
     Splits text on whitespace and maps tokens to sentiment values using a static lexicon.
     """
     packets = []
-    for token in text.lower().split():
+    # Normalize text: lowercase, remove punctuation
+    normalized_text = re.sub(r'[^\w\s]', '', text.lower())
+    for token in normalized_text.split():
         packets.append({
             "type": "token",
             "value": token,

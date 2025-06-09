@@ -1,8 +1,10 @@
-# Documentation
+# Welcome to the Pressure-AGI Documentation
 
-This directory contains reports and benchmarks for the KAI project.
+This site contains the technical documentation for the Pressure-AGI project.
 
-## Table of Contents
+## Key Documents
 
-- [Phase 0 Report](./phase0_report.md)
-- [Performance Benchmarks](./perf.md) 
+-   **[Architecture](ARCH.md)**: A high-level overview of the system's components and data flow.
+-   **[Performance](perf.md)**: Benchmarks and performance metrics.
+
+Navigate using the links to learn more about the agent's design and implementation. 

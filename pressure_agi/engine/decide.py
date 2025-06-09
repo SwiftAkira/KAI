@@ -20,8 +20,8 @@ def decide(field: Field, pos_threshold: float, neg_threshold: float) -> Optional
     coherence = torch.mean(field.states).item()
 
     if coherence > pos_threshold:
-        return Action(type="positive")
+        return Action(type="positive", vector=torch.empty(0, device=field.device, dtype=field.dtype))
     elif coherence < neg_threshold:
-        return Action(type="negative")
+        return Action(type="negative", vector=torch.empty(0, device=field.device, dtype=field.dtype))
     else:
-        return None 
+        return Action(type="neutral", vector=torch.empty(0, device=field.device, dtype=field.dtype)) 

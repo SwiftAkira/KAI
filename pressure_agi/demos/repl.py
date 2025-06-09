@@ -103,7 +103,7 @@ async def step_once(
     snapshot = {
         "t": loop_count,
         "text": text,
-        "vector": action.vector,
+        "vector": field.states.clone(),
         "decision": action.type
     }
     memory.store(snapshot)
@@ -147,15 +147,17 @@ def generate_dashboard(
     # --- Rollout Rewards Panel ---
     if rollout_rewards:
         reward_bars = ""
-        # Normalize rewards for display if they vary widely, but for now, just clip them
         min_reward = min(rollout_rewards) if rollout_rewards else 0
         max_reward = max(rollout_rewards) if rollout_rewards else 0
         
         for i, reward in enumerate(rollout_rewards):
-            # Simple scaling for the bar
-            bar_fraction = (reward - min_reward) / (max_reward - min_reward + 1e-6)
-            reward_bars += f"Candidate {i+1}: {reward:.3f}\n"
-            reward_bars += str(Bar(size=50, begin=0, end=1, fraction=bar_fraction)) + "\n"
+            # Manually create a bar chart as the rich.bar.Bar object is for progress bars
+            bar_width = 30
+            # Normalize the reward to a fraction between 0 and 1
+            fraction = (reward - min_reward) / (max_reward - min_reward + 1e-6)
+            filled_len = int(fraction * bar_width)
+            bar = f"[green]{'█' * filled_len}[/green][bright_black]{'█' * (bar_width - filled_len)}[/bright_black]"
+            reward_bars += f"Candidate {i+1}: {reward:.3f} {bar}\n"
             
         rewards_panel = Panel(
             reward_bars,
@@ -174,13 +176,13 @@ def generate_dashboard(
     return Panel(layout, title="[bold yellow]Pressure-AGI Dashboard[/bold yellow]")
 
 @app.command()
-def run(
-    gpu: bool = typer.Option(False, "--gpu", help="Enable GPU acceleration."),
-    settle_steps: int = typer.Option(100, help="Number of simulation steps to settle the field."),
-    theta_pos: float = typer.Option(None, help="Positive decision threshold. Overrides config."),
-    theta_neg: float = typer.Option(None, help="Negative decision threshold. Overrides config."),
-    resonance_gain: float = typer.Option(0.07, help="Gain for memory resonance pressure."),
-    k_resonance: int = typer.Option(3, help="Number of memories to use for resonance."),
+def main(
+    gpu: bool = typer.Option(False, "--gpu", help="Enable GPU (MPS) acceleration."),
+    k_resonance: float = typer.Option(0.1, help="Gain for memory resonance."),
+    settle_steps: int = typer.Option(20, help="Number of simulation steps to settle the field."),
+    theta_pos: Optional[float] = typer.Option(None, help="Positive decision threshold."),
+    theta_neg: Optional[float] = typer.Option(None, help="Negative decision threshold."),
+    dashboard: bool = typer.Option(False, "--dashboard", help="Display the Rich dashboard.")
 ):
     """
     A simple REPL to interact with the pressure-AGI agent.
@@ -206,61 +208,86 @@ def run(
     # Load memory from last session if available
     memory.load_from_disk(snapshot_file)
 
-    while True:
-        try:
-            field = Field(n=0, device=device)
+    # Initialize the Field ONCE, outside the loop, for persistent state.
+    field = Field(n=0, device=device)
+
+    if dashboard:
+        # Run with the full dashboard
+        run_with_dashboard(field, memory, critic, planner, adapter, k_res, settle_steps, pos_threshold, neg_threshold)
+    else:
+        # Run in simple, clean REPL mode
+        run_without_dashboard(field, memory, critic, planner, adapter, k_res, settle_steps, pos_threshold, neg_threshold)
+
+def run_with_dashboard(field, memory, critic, planner, adapter, k_res, settle_steps, pos_threshold, neg_threshold):
+    """Main loop with the Rich Live dashboard."""
+    loop_count = 0
+    dashboard_layout = generate_dashboard(loop_count, 0.0, "Waiting for input...")
+    with Live(dashboard_layout, screen=True, redirect_stderr=False, vertical_overflow="visible") as live:
+        while True:
+            try:
+                text = input("> ")
+                if text.lower() == 'exit':
+                    break
+                
+                loop_count += 1
+
+                # Planning, action, and dashboard update logic...
+                # (This is the same logic as before)
+                if field.n > 0:
+                    candidate_tuples = [(torch.randn(field.n, device=field.device, dtype=field.dtype), None) for _ in range(5)]
+                    planner.evaluate_candidates(field, candidate_tuples, env=None)
+                    selected_goal_node = planner.select_action()
+                    if selected_goal_node:
+                        action_vector = selected_goal_node.vector
+                        min_dim = min(field.n, len(action_vector))
+                        if min_dim > 0: field.pressures[:min_dim] += action_vector[:min_dim]
+                        critic.freeze(10)
+                    planner.prune_goals()
+
+                action, k_res = asyncio.run(step_once(field, text, memory, critic, loop_count, settle_steps, pos_threshold, neg_threshold, k_res, verbose=False))
+                output = adapter.adapt(action)
+                dashboard_layout = generate_dashboard(loop_count, critic.last_entropy, output, planner.last_rollout_rewards)
+                live.update(dashboard_layout)
+
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                live.console.print(f"An error occurred: {e}", style="bold red")
+
+def run_without_dashboard(field, memory, critic, planner, adapter, k_res, settle_steps, pos_threshold, neg_threshold):
+    """Main loop for the simple, clean REPL."""
+    loop_count = 0
+    try:
+        while True:
             text = input("> ")
             if text.lower() == 'exit':
                 break
             
             loop_count += 1
-
-            # --- Snapshotting ---
-            if loop_count % 500 == 0:
-                memory.save_to_disk(snapshot_file)
-
-            # --- Planning Step (Not used in REPL, but runs in parallel) ---
+            
+            # Agent's thinking process...
             if field.n > 0:
-                candidate_goals = [torch.randn(field.n, device=device, dtype=torch.float64) for _ in range(5)]
-                candidate_tuples = [(vec, None) for vec in candidate_goals]
+                candidate_tuples = [(torch.randn(field.n, device=field.device, dtype=field.dtype), None) for _ in range(5)]
                 planner.evaluate_candidates(field, candidate_tuples, env=None)
                 selected_goal_node = planner.select_action()
                 if selected_goal_node:
-                    # Inject the selected goal into the live field
                     action_vector = selected_goal_node.vector
                     min_dim = min(field.n, len(action_vector))
-                    if min_dim > 0:
-                        field.pressures[:min_dim] += action_vector[:min_dim]
-                    
-                    # Freeze the critic to prevent oscillation
+                    if min_dim > 0: field.pressures[:min_dim] += action_vector[:min_dim]
                     critic.freeze(10)
-
                 planner.prune_goals()
-            
-            # --- Main REPL Step ---
-            table = generate_dashboard(loop_count, critic.last_entropy, "...", planner.last_rollout_rewards)
-            with Live(table, screen=True, redirect_stderr=False, vertical_overflow="visible") as live:
-                action, k_res = asyncio.run(step_once(
-                    field, text, memory, critic,
-                    loop_count=loop_count,
-                    settle_steps=settle_steps,
-                    pos_threshold=pos_threshold,
-                    neg_threshold=neg_threshold,
-                    k_resonance=k_res,
-                    verbose=False
-                ))
-                
-                output = adapter.adapt(action)
-                
-                table = generate_dashboard(loop_count, critic.last_entropy, output, planner.last_rollout_rewards)
-                live.update(table)
 
-        except KeyboardInterrupt:
-            break
-        except Exception as e:
-            print(f"[bold red]An error occurred: {e}[/bold red]")
+            action, k_res = asyncio.run(step_once(field, text, memory, critic, loop_count, settle_steps, pos_threshold, neg_threshold, k_res, verbose=False))
+            output = adapter.adapt(action)
+            # Always print the output
+            print(f"[bright_black]Agent:[/bright_black] {output}")
 
-    print("[bold green]Exiting REPL.[/bold green]")
+    except (KeyboardInterrupt, EOFError):
+        print("\nExiting REPL.")
+    finally:
+        # Save memory on exit
+        memory.save_to_disk("memory_snapshot.pt")
+        print("[bold green]Agent memory saved.[/bold green]")
 
 if __name__ == "__main__":
     app() 

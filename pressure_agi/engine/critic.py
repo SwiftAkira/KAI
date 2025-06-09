@@ -18,8 +18,9 @@ class Critic:
 
     def calculate_entropy(self, field: Field) -> float:
         """Calculates and returns the entropy of the field (std dev of states)."""
-        if field.n == 0:
+        if field.n < 2:
             return 0.0
+        
         entropy = torch.std(field.states).item()
         self.last_entropy = entropy
         return entropy
@@ -37,7 +38,14 @@ class Critic:
         Lower is better. The planner will try to maximize this value.
         Optionally returns gradients for logging.
         """
-        if field.n == 0:
+        # First, check if the critic is frozen
+        if self.frozen_steps > 0:
+            self.frozen_steps -= 1
+            # Return the last known score without recalculating
+            return self.last_score, None
+
+        # Standard deviation is not meaningful for < 2 elements.
+        if field.n < 2:
             return 0.0, None
 
         states = field.states.clone()
