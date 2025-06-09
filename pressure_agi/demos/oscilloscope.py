@@ -1,9 +1,10 @@
 import time, typer, random
+import torch
 from rich.live import Live
 from rich.table import Table
 from pressure_agi.engine.field import Field
 from pressure_agi.engine.memory import EpisodicMemory
-import torch
+from pressure_agi.engine.decide import decide
 
 app = typer.Typer()
 
@@ -23,7 +24,12 @@ def run(nodes: int = 30, steps: int = 500, gpu: bool = False):
                 'state_vector': field.cpu_states.tolist()
             }
             memory.store(snapshot)
-            table = Table(title=f"t={t} ({field.device})")
+            
+            decision = decide(field)
+            table = Table(
+                title=f"t={t} ({field.device})",
+                caption=f"Decision: {decision}"
+            )
             for i, state in enumerate(field.cpu_states):
                 table.add_row(f"{i}", f"{state:+.3f}")
             live.update(table, refresh=True)
