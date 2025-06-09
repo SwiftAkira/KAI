@@ -11,6 +11,13 @@ LEXICON = {
     "hate": -0.9,
     "happy": 0.7,
     "sad": -0.7,
+    "cool": 0.6,
+    "amazing": 0.9,
+    "best": 1.0,
+    "friends": 0.7,
+    "like": 0.4,
+    "dont": -0.3,
+    "not": -0.5,
 }
 
 def decode(text: str) -> List[Dict]:

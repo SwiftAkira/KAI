@@ -6,6 +6,7 @@ from pressure_agi.engine.field import Field
 from pressure_agi.engine.injector import inject
 from pressure_agi.engine.decide import decide
 from pressure_agi.io.codec_text import decode, encode
+from pressure_agi.engine.memory import EpisodicMemory
 
 app = typer.Typer()
 
@@ -38,6 +39,8 @@ def run(
     print(f"Using thresholds: [cyan]positive > {pos_threshold}[/cyan], [cyan]negative < {neg_threshold}[/cyan]\n")
 
     device = 'gpu' if gpu else 'cpu'
+    memory = EpisodicMemory()
+    loop_count = 0
 
     while True:
         try:
@@ -46,6 +49,8 @@ def run(
             text = input("> ")
             if text.lower() == 'exit':
                 break
+            
+            loop_count += 1
 
             # 1. Decode input text into percepts
             percepts = decode(text)
@@ -62,8 +67,17 @@ def run(
 
             # 4. Decide on an action
             action = decide(field, pos_threshold, neg_threshold)
+
+            # 5. Store snapshot in memory
+            snapshot = {
+                "t": loop_count,
+                "vector": field.cpu_states,
+                "decision": action
+            }
+            memory.store(snapshot)
+            print(f"[blue]Stored snapshot {loop_count} in memory. Last decision was '{memory.retrieve_last()[0]['decision']}'.[/blue]")
             
-            # 5. Encode and print the action
+            # 6. Encode and print the action
             output = encode(action)
             print(f"[bold magenta]{output}[/bold magenta]\n")
 
