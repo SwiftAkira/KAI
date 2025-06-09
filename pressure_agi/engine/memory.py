@@ -1,11 +1,12 @@
 import torch
+import pathlib
 
 class EpisodicMemory:
     """
     A memory system that stores episodes as flat tensors for efficient similarity search.
     It uses a fixed-size circular buffer to store memories.
     """
-    def __init__(self, max_episodes: int = 1000, max_dim: int = 512, device: str = 'cpu'):
+    def __init__(self, max_episodes: int = 2000, max_dim: int = 512, device: str = 'cpu'):
         """
         Initializes the memory store.
         Args:
@@ -24,6 +25,35 @@ class EpisodicMemory:
         
         self.pointer = 0
         self.size = 0
+
+    def save_to_disk(self, file_path: str):
+        """Saves the current memory state to a file."""
+        path = pathlib.Path(file_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        torch.save({
+            'mem_states': self.mem_states,
+            'mem_time': self.mem_time,
+            'mem_tags': self.mem_tags,
+            'pointer': self.pointer,
+            'size': self.size
+        }, file_path)
+        print(f"[Memory] Snapshot saved to {file_path}")
+
+    def load_from_disk(self, file_path: str):
+        """Loads a memory state from a file."""
+        path = pathlib.Path(file_path)
+        if not path.exists():
+            print(f"[Memory] Snapshot file not found: {file_path}")
+            return
+
+        data = torch.load(file_path)
+        self.mem_states = data['mem_states'].to(self.device)
+        self.mem_time = data['mem_time'].to(self.device)
+        self.mem_tags = data['mem_tags']
+        self.pointer = data['pointer']
+        self.size = data['size']
+        print(f"[Memory] Snapshot loaded from {file_path}")
 
     def _pad_vector(self, vector: torch.Tensor) -> torch.Tensor:
         """Pads a vector to the max_dim size."""

@@ -12,7 +12,7 @@ from rich.bar import Bar
 
 from pressure_agi.engine.field import Field
 from pressure_agi.engine.injector import inject
-from pressure_agi.engine.decide import decide
+from pressure_agi.engine.decide import decide, Action
 from pressure_agi.io.codec_text import decode
 from pressure_agi.engine.memory import EpisodicMemory
 from pressure_agi.engine.critic import Critic
@@ -30,79 +30,85 @@ def load_config():
         return {}
 
 async def step_once(
-    text: str,
     field: Field,
-    critic: Optional[Critic],
-    memory: Optional[EpisodicMemory],
+    text: str,
+    memory: EpisodicMemory,
+    critic: Critic,
     loop_count: int,
     settle_steps: int,
     pos_threshold: float,
     neg_threshold: float,
-    resonance_gain: float = 0.0,
-    k_resonance: int = 0,
-    verbose: bool = True
-) -> str:
-    """Processes a single turn of the agent's loop."""
-    # 1. Decode input text into percepts
-    percepts = decode(text)
-    if verbose: print(f"[yellow]Decoded {len(percepts)} percepts...[/yellow]")
+    k_resonance: float,
+    verbose: bool = False
+) -> tuple[Action, float]:
+    """
+    Performs one full step of the agent's sense-plan-act loop.
+    This version includes resonance damping.
+    """
+    # 1. Encode and inject text input
+    if text:
+        percepts = decode(text)
+        if verbose: print(f"Injecting {len(percepts)} percepts.")
+        inject(field, percepts)
 
-    # 2. Inject percepts into the field
-    inject(field, percepts)
-    if verbose: print(f"[yellow]Injected. Field now has {field.n} nodes.[/yellow]")
-
-    # 3. Critic evaluates the field before settling
-    if critic:
-        # HACK: The critic's intervention destabilizes the new physics model.
-        # The new model is self-regulating, so the critic is disabled for now.
-        # critic.evaluate(field)
-        pass # Explicitly doing nothing with the critic for now
-
-    # 4. Settle the field by stepping the simulation
-    # A short settle after injection is critical for stability
-    for _ in range(10):
-        field.step()
-
-    if verbose: print(f"[yellow]Settling field for {settle_steps} steps...[/yellow]")
+    # 2. Settle the field
+    if verbose: print(f"Settling field for {settle_steps} steps.")
     for _ in range(settle_steps):
         field.step()
 
-    # 5. Memory Resonance
-    if memory and k_resonance > 0 and resonance_gain > 0.0:
-        if verbose: print(f"[cyan]Retrieving {k_resonance} memories for resonance...[/cyan]")
-        retrieved_snapshots = memory.retrieve(field.states, k=k_resonance)
-        
-        for snapshot in retrieved_snapshots:
-            retrieved_state = snapshot['vector']
-            
-            # Calculate delta and apply resonance to pressure
-            min_dim = min(field.n, len(retrieved_state))
-            delta = retrieved_state[:min_dim] - field.states[:min_dim]
-            field.pressures[:min_dim] += resonance_gain * delta
-            if verbose: print(f"  [cyan]Applying resonance from snapshot t={snapshot['t']}...[/cyan]")
-        
-        # Settle the field again after applying resonance
-        if verbose and retrieved_snapshots: print(f"[yellow]Re-settling field after resonance...[/yellow]")
-        for _ in range(settle_steps // 2):
-            field.step()
+    # 3. Critic evaluates the current state
+    critic.evaluate(field)
 
-    # 6. Decide on an action (Planner replaces simple 'decide')
-    # The planner will be used here to select a high-level action/goal
-    # For now, we will keep the simple decide for the REPL loop
+    # 4. Episodic Memory Resonance with Damping
+    new_k_resonance = k_resonance
+    if memory.size > 0:
+        entropy_before = critic.last_entropy
+        
+        retrieved_snapshots = memory.retrieve(field.states, k=3)
+        if verbose and retrieved_snapshots: print(f"Retrieved {len(retrieved_snapshots)} memories.")
+
+        if retrieved_snapshots:
+            total_resonance_delta = torch.zeros_like(field.pressures)
+            for snapshot in retrieved_snapshots:
+                field_dim = field.n
+                resonance_vector = snapshot['vector'][:field_dim] * new_k_resonance
+                total_resonance_delta += resonance_vector
+
+            # --- Damping Logic ---
+            max_delta_norm = 1.0
+            current_delta_norm = torch.norm(total_resonance_delta)
+            if current_delta_norm > max_delta_norm:
+                total_resonance_delta = total_resonance_delta * (max_delta_norm / current_delta_norm)
+
+            field.pressures += total_resonance_delta
+
+            entropy_after = critic.calculate_entropy(field)
+            if entropy_after > entropy_before:
+                new_k_resonance *= 0.9 # Decay gain
+            else:
+                new_k_resonance *= 1.05 # Increase gain
+                new_k_resonance = min(new_k_resonance, 1.0)
+            if verbose: print(f"k_resonance updated to {new_k_resonance:.3f}")
+
+            # Settle field again after resonance
+            for _ in range(settle_steps // 2):
+                field.step()
+
+    # 5. Decide on an action
     action = decide(field, pos_threshold, neg_threshold)
+    if action is None:
+        action = Action(type="neutral", vector=torch.empty(0, device=field.device, dtype=field.dtype))
 
-    # 7. Store snapshot in memory
-    if memory:
-        snapshot = {
-            "t": loop_count,
-            "text": text,
-            "vector": torch.tensor(action.vector, device=field.device, dtype=field.dtype) if action.vector is not None else torch.empty(0, device=field.device, dtype=field.dtype),
-            "decision": action.type
-        }
-        memory.store(snapshot)
-        if verbose: print(f"[blue]Stored snapshot {loop_count} in memory. Last decision was '{memory.retrieve_last()[0]['decision']}'.[/blue]")
-    
-    return action
+    # 6. Store snapshot in memory
+    snapshot = {
+        "t": loop_count,
+        "text": text,
+        "vector": action.vector,
+        "decision": action.type
+    }
+    memory.store(snapshot)
+
+    return action, new_k_resonance
 
 def generate_dashboard(
     loop_count: int,
@@ -193,7 +199,12 @@ def run(
     critic = Critic()
     planner = Planner(critic=critic)
     adapter = TextAdapter()
+    k_res = k_resonance # Use a different name to avoid shadowing
     loop_count = 0
+    snapshot_file = "memory_snapshot.pt"
+
+    # Load memory from last session if available
+    memory.load_from_disk(snapshot_file)
 
     while True:
         try:
@@ -204,48 +215,43 @@ def run(
             
             loop_count += 1
 
-            # --- Planning Step ---
-            # 1. Generate candidate goals (for now, random vectors)
-            num_nodes = field.n if field.n > 0 else 1 # Avoid size 0
-            candidate_goals = [torch.randn(num_nodes, device=device, dtype=torch.float64) for _ in range(5)]
-            
-            # The action is None because there's no external environment
-            candidate_tuples = [(vec, None) for vec in candidate_goals]
+            # --- Snapshotting ---
+            if loop_count % 500 == 0:
+                memory.save_to_disk(snapshot_file)
 
-            # 2. Planner evaluates candidates based on internal score
-            planner.evaluate_candidates(field, candidate_tuples, env=None)
+            # --- Planning Step (Not used in REPL, but runs in parallel) ---
+            if field.n > 0:
+                candidate_goals = [torch.randn(field.n, device=device, dtype=torch.float64) for _ in range(5)]
+                candidate_tuples = [(vec, None) for vec in candidate_goals]
+                planner.evaluate_candidates(field, candidate_tuples, env=None)
+                selected_goal_node = planner.select_action()
+                if selected_goal_node:
+                    # Inject the selected goal into the live field
+                    action_vector = selected_goal_node.vector
+                    min_dim = min(field.n, len(action_vector))
+                    if min_dim > 0:
+                        field.pressures[:min_dim] += action_vector[:min_dim]
+                    
+                    # Freeze the critic to prevent oscillation
+                    critic.freeze(10)
 
-            # 3. Select best action
-            selected_goal_node = planner.select_action()
-
-            # 4. Inject selected action into the live field
-            if selected_goal_node:
-                action_vector = selected_goal_node.vector
-                min_dim = min(field.n, len(action_vector))
-                if min_dim > 0:
-                    field.pressures[:min_dim] += action_vector[:min_dim]
-
-            # 5. Prune planner tree for next cycle
-            planner.prune_goals()
+                planner.prune_goals()
             
             # --- Main REPL Step ---
-            # We still run the original step_once to process the user input
-            # and get a low-level action for the dashboard. The planner runs in parallel.
-            table = generate_dashboard(loop_count, critic.last_entropy, "...")
+            table = generate_dashboard(loop_count, critic.last_entropy, "...", planner.last_rollout_rewards)
             with Live(table, screen=True, redirect_stderr=False, vertical_overflow="visible") as live:
-                action = asyncio.run(step_once(
+                action, k_res = asyncio.run(step_once(
                     field, text, memory, critic,
                     loop_count=loop_count,
                     settle_steps=settle_steps,
                     pos_threshold=pos_threshold,
                     neg_threshold=neg_threshold,
-                    k_resonance=k_resonance,
-                    verbose=False # Suppress step_once prints for clean dashboard
+                    k_resonance=k_res,
+                    verbose=False
                 ))
                 
                 output = adapter.adapt(action)
                 
-                # Update dashboard with final values
                 table = generate_dashboard(loop_count, critic.last_entropy, output, planner.last_rollout_rewards)
                 live.update(table)
 
